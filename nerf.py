@@ -48,7 +48,7 @@ print(f'Generated {len(target_images)} images/silhouettes/cameras.')
 
 
 '''
-(3) Initialize the implicit renderer
+(2) Initialize the implicit renderer
 
 Below code initializes an `implicit renderer` that emits a ray from each pixel of a target image, and samples a set 
 of `uniformly-spaced` points along the ray. At each ray-point, the corresponding i) density and ii) color value is obtained 
@@ -108,8 +108,58 @@ renderer_mc = ImplicitRenderer(
 )
 
 
+'''
+(3) Define the Neural Radiance Field (NeRF) model
 
+Below code defines the `NeuralRadianceField` module, which specifies a continuous field of 
+i) colors and ii) opacities over the 3D domain of the scene.
 
+The `forward` function of `NeuralRadianceField` receives as input `a set of tensors that parametrize 
+a bundle of rendering rays`. The ray bundle is later converted to 3D ray points in the world 
+coordinates of the scene. Each 3D point is then mapped to a `harmonic representation` using the 
+`HarmonicEmbedding` layer. The harmonic embeddings then enter the color and opacity branches
+of the NeRF model in order to label each ray point with a 3D vector and a 1D scalar ranging in [0-1]
+which define the point's i) RGB color and ii) opacity respectively.
+
+Since NeRF has a large memory footprint, we also implement the `NeuralRadianceField.forward_batched` method.
+This method splits the input rays into `batches` and executes the `forward function` for each batch
+separately in a for loop. This lets us render a large set of rays without running out of GPU memory.
+Standardly, `forward_batched` would be used to render rays emitted from all pixels of an image in order
+to produce a full-sized render of a scene.
+'''
+class HarmonicEmbedding(torch.nn.module):
+    def __init__(self, n_harmonic_functions=60, omega0=0.1):
+        return
+
+    def forward(self, x):
+        return
+
+    
+class NeuralRadianceField(torch.nn.Module):
+    def __init__(self, n_harmonic_functions=60, n_hidden_neurons=256):
+        super().__init__()
+        return
+
+    def _get_densities(self, features):
+        return
+
+    def _get_colors(self, features, rays_directions):
+        return
+
+    def forward(
+        self, 
+        ray_bundle: RayBundle,
+        **kwargs,
+    ):
+        return
+
+    def batched_forward(
+        self,
+        ray_bundle: RayBundle,
+        n_batches: int = 16,
+        **kwargs,
+    ):
+        return
 
 
 
