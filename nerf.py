@@ -30,6 +30,8 @@ from pytorch3d.renderer import (
 from utils.generate_cow_renders import generate_cow_renders
 from utils.plot_image_grid import plot_image_grid
 
+from nerf_helpers import huber, sample_images_at_mc_locs
+
 # Set CUDA device
 device = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
 torch.cuda.set_device(device)
@@ -304,7 +306,48 @@ class NeuralRadianceField(torch.nn.Module):
 
 
 
+def show_full_render(
+    neural_radiance_field, camera,
+    target_image, target_silhouette, 
+    loss_history_color, loss_history_sil
+):
+    '''
+    Visualizes intermediate results of learning.
+    '''
+    with torch.no_grad():       # No gradient caching
+        rendered_image_silhoutte, _ = renderer_grid(                        # Render using `grid renderer`
+            cameras=camera,                                                 
+            volumetric_function=neural_radiance_field.batched_forward
+        )
+        rendered_image, renderered_silhoutte = (                            # Split rendering results to i) silhoutte render 
+            rendered_image_silhoutte[0].split([3, 1], dim=-1)               # and ii) image render.
+        )
+    
+    # Generate plots.
+    fig, ax = plt.subplots(2, 3, figsize=(15, 10))
+    ax = ax.ravel()
+    clamp_and_detach = lambda x: x.clamp(0.0, 1.0).cpu().detach().numpy()
 
+    ax[0].plot(list(range(len(loss_history_color))), loss_history_color, linewidth=1)
+    ax[1].imshow(clamp_and_detach(rendered_image))
+    ax[2].imshow(clamp_and_detach(renderered_silhoutte[..., 0]))
+    ax[3].plot(list(range(len(loss_history_sil))), loss_history_sil, linewidth=1)
+    ax[4].imshow(clamp_and_detach(target_image))
+    ax[5].imshow(clamp_and_detach(target_silhouette))
 
-
-
+    for ax_, title_ in zip(
+        ax,
+        (
+            "loss color", "rendered image", "rendered silhouette",
+            "loss silhouette", "target image",  "target silhouette",
+        )
+    ):
+        if not title_.startswith('loss'):
+            ax_.grid('off')
+            ax_.axis('off')
+        ax_.set_title(title_)
+    
+    fig.canvas.draw()
+    # fig.show()
+    fig.savefig('render_image.png')
+    return fig
