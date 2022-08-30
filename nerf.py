@@ -129,7 +129,7 @@ to produce a full-sized render of a scene.
 '''
 class HarmonicEmbedding(torch.nn.module):
     def __init__(self, n_harmonic_functions=60, omega0=0.1):
-        return
+       return
 
     def forward(self, x):
         return
@@ -138,20 +138,121 @@ class HarmonicEmbedding(torch.nn.module):
 class NeuralRadianceField(torch.nn.Module):
     def __init__(self, n_harmonic_functions=60, n_hidden_neurons=256):
         super().__init__()
-        return
+        '''
+        args:
+            - n_harmonic_functions: # of harmonic functions used to 
+                form the harmonic embedding of each point.
+            - n_hidden_neurons: # of hidden units in the fully connected
+                layers of the MLPs of the model.
+        '''
+
+        self.harmonic_embedding = HarmonicEmbedding(n_harmonic_functions)   # The harmoinc embedding layer converts inputs 
+                                                                            # 3D coordinates to a representation that is more
+                                                                            # suitable for processing with a `deep neural network`.
+
+        embedding_dim = n_harmonic_functions * 2 * 3                        # Dimension of harmonic embedding
+
+        self.mlp = torch.nn.Sequential(                                     # `self.mlp` is a simple 2-layer multi-layer perceptron
+            torch.nn.Linear(embedding_dim, n_hidden_neurons),               # that converts `the input per-point harmonic embeddings``
+            torch.nn.Softplus(beta=10.0),                                   # to a latent representation.
+            torch.nn.Linear(n_hidden_neurons, n_hidden_neurons),            # Note: Uses Softplus activation instead ReLU.
+            torch.nn.Softplus(beta=10.0),
+        )
+
+        self.color_layer = torch.nn.Sequential(
+            torch.nn.Linear(n_hidden_neurons + embedding_dim, n_hidden_neurons),    # Given features predicted by `self.mlp`, `self.color_layer` is
+            torch.nn.Softplus(beta=10.0),                                           # responsible for predicting a 3D per-point vector that 
+            torch.nn.Linear(n_hidden_neurons, 3),                                   # represents `RGB color` of that point.
+            torch.nn.Sigmoid(),                                                     # Ensures the colors range in [0-1]
+        )
+
+        self.density_layer = torch.nn.Sequential(                                   # Density layer converts the features of `self.mlp`
+            torch.nn.Linear(n_hidden_neurons, 1),                                   # to a 1D density value representing the raw opacity
+            torch.nn.Softplus(beta=10.0),                                           # of each point.
+        )
+
+        # We set the `bias of the density layer` to -1.5 in order to 
+        # initialize the opacities of the ray points to values close to 0.
+        # A crucial detail for ensuring convergence of the model!
+        self.density_layer[0].bias.data[0] = -1.5
 
     def _get_densities(self, features):
-        return
+        '''
+        - input: `features` (predicted by self.mlp)
+        - output: `raw_densities`
+
+        Takes predicted features and converts them to `raw_densities` through 
+        `self.density_layer`. And `raw_densities` are later mapped to [0-1] range.
+        ''' 
+        raw_densities = self.density_layer(features)
+        return 1 - (-raw_densities).exp()
 
     def _get_colors(self, features, rays_directions):
-        return
+        '''
+        Takes `per-point predicted features` and evalutes the color model in order 
+        to attach to each point `a 3D vector of its RGB color`.
+        
+        To represent `viewpoint dependent effects`, before evaluating `self.color_layer`,
+        `NeuralRadianceField` concats i) `features` and ii) a harmonic embedding of `ray_directions`, 
+        which are per-point directions of point rays expressed as 3D l2-normalized vectors in 
+        world coordinates.
+        '''
+        spatial_size = features.shape[:-1]
+
+        rays_directions_normed = torch.nn.functional.normalize(     # Normalize the ray_directions to unit l2 norm.
+            rays_directions, dim=-1
+        )
+
+        rays_embedding = self.harmonic_embedding(                   # Obtain the harmonic embedding of the 
+            rays_directions_normed                                  # normalized ray directions.
+        )
+
+        rays_embedding_expand = rays_embedding[..., None, :].expand(    # Expand the `ray directions tensor` so that its spatial size
+            *spatial_size, rays_embedding.shape[-1]                     # is equal to the `size of features`.
+        )
+
+        color_layer_input = torch.cat(                              # Concat `ray direction embeddings` with `features`
+            (features, rays_embedding_expand),                      # and evaluate the color model.
+            dim=-1
+        )
+        return self.color_layer(color_layer_input)
 
     def forward(
         self, 
         ray_bundle: RayBundle,
         **kwargs,
     ):
-        return
+        '''
+        forward pass:
+            - takes parametrizations of 3D points sampled along projection rays
+            - attaches a `3D vector` and a `1D scalar`, representing the point's i) RGB color and ii) opacity, respectively
+        
+        input:
+            - ray_bundle: A `RayBundle` object, containing the following variables:
+                (i) origins: [minibatch, ..., 3]
+                    --> denotes the `origins` of the sampling rays in world coords.
+                (ii) directions: [minibatch, ..., 3]
+                    --> contains the direction vectors of sampling rays in world coords.
+                (iii) lengths: [minibatch, ..., num_points_per_ray]
+                    --> contains the lengths at which the rays are sampled.
+        output:
+            - rays_densities: [minibatch, ..., num_points_per_ray, 1]
+                --> denotes the `opacity` of each ray point
+            - rays_colors: [minibatch, ..., num_points_per_ray, 3]
+                --> denotes the `color` of each ray point
+        '''
+        rays_points_world = ray_bundle_to_ray_points(ray_bundle)        # Convert ray parametrizations to world coords.
+
+        embeds = self.harmonic_embedding(                               # For each 3D world coord, get its harmonic embedding.
+            rays_points_world
+        )
+        features = self.mlp(embeds)                                     # Maps each harmonic embedding to a `latent feature space`.
+
+        # Finally, given `per-point features`, execute the i) density and ii) color branches.
+        rays_densities = self._get_densities(features)
+        rays_colors = self._get_colors(features, ray_bundle.directions)
+
+        return rays_densities, rays_colors
 
     def batched_forward(
         self,
@@ -159,7 +260,47 @@ class NeuralRadianceField(torch.nn.Module):
         n_batches: int = 16,
         **kwargs,
     ):
-        return
+        '''
+        Allows `memory efficient` processing of input rays.
+        This method is used to export a fully-sized render of the radiance field for visualization purposes.
+
+        input:
+            - ray_bundle
+            - n_batches: Specifies the # of batches the input rays are split into. 
+                --> The larger the # of batches, the smaller the memory footprint and 
+                the lower the processing speed.
+        
+        output:
+            - rays_densities
+            - rays_colors
+        '''
+        n_pts_per_ray = ray_bundle.lengths.shape[-1]                    # Parse out shapes needed for `tensor reshaping`.
+        spatial_size = [*ray_bundle.origins.shape[:-1], n_pts_per_ray]
+
+        tot_samples = ray_bundle.origins.shape[:-1].numel()             # Split rays into `n_batches`
+        batches = torch.chunk(torch.arange(tot_samples), n_batches)
+
+        # For each batch, execute forward pass
+        batch_outputs = [
+            self.forward(
+                RayBundle(
+                    origins=ray_bundle.origins.view(-1, 3)[batch_idx],
+                    directions=ray_bundle.directions.view(-1, 3)[batch_idx],
+                    lengths=ray_bundle.lengths.view(-1, n_pts_per_ray)[batch_idx],
+                    xys=None
+                )
+            ) for batch_idx in batches
+        ]
+
+        # Concat the `per-batch` rays_densities and rays_colors and 
+        # reshape according to the sizes of the inputs.
+        rays_densities, rays_colors = [
+            torch.cat(
+                [batch_out[output_i] for batch_out in batch_outputs],
+                dim=0
+            ).view(*spatial_size, -1) for output_i in (0, 1)
+        ]
+        return rays_densities, rays_colors
 
 
 
