@@ -1,6 +1,12 @@
 # nerf_dev
 Developing a vanilla NeRF pipeline.
 
+This repository contains replications of the NeRF model based on different tutorials:
+* Version 1. PyTorch3D NeRF Tutorial [[link](https://github.com/facebookresearch/pytorch3d/blob/main/docs/tutorials/fit_simple_neural_radiance_field.ipynb)]
+* Version 2. It’s NeRF From Nothing: Build A Complete NeRF with PyTorch [[link](https://towardsdatascience.com/its-nerf-from-nothing-build-a-vanilla-nerf-with-pytorch-7846e4c45666)]
+* Version 3. NeRF Colab Notebook from [nerf-pytorch](https://github.com/krrish94/nerf-pytorch)
+
+### Version 1. PyTorch3D NeRF Tutorial
 Fit a simple Neural Radiance Field via raymarching.
 
 This tutorial shows how to fit Neural Radiance Field given a set of view of a scene using differentiable implicit function rendering. The presented implicit model is a simplified version of NeRF (Mildenhall et al., ECCV 2020)
