@@ -401,7 +401,7 @@ def generate_rotating_nerf(neural_radiance_field, n_frames=50):
 
         frames.append(
             renderer_grid(
-                camearas=camera,
+                cameras=camera,
                 volumetric_function=neural_radiance_field.batched_forward
             )[0][..., :3]
         )
@@ -466,7 +466,7 @@ if __name__=='__main__':
 
         # Evaluate the NeRF model!
         rendered_images_silhouettes, sampled_rays = renderer_mc(
-            cemeras=batch_cameras,
+            cameras=batch_cameras,
             volumetric_function=neural_radiance_field
         )
         rendered_images, rendered_silhouettes = (

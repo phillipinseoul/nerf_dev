@@ -20,7 +20,7 @@ def sample_images_at_mc_locs(target_images, sampled_rays_xy):
     this function samples the tensor `target_images` at the respective 2D locations.
     '''
     ba = target_images.shape[0]
-    dim = target_images.shape[1]
+    dim = target_images.shape[-1]
     spatial_size = sampled_rays_xy.shape[1:-1]
     
     # We have to invert the sign of the `sampled ray positions` to
