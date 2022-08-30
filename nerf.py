@@ -28,7 +28,7 @@ from pytorch3d.renderer import (
 )
 
 from utils.generate_cow_renders import generate_cow_renders
-from utils.plot_image_grid import plot_image_grid
+from utils.plot_image_grid import image_grid
 
 from nerf_helpers import huber, sample_images_at_mc_locs
 
@@ -129,7 +129,7 @@ separately in a for loop. This lets us render a large set of rays without runnin
 Standardly, `forward_batched` would be used to render rays emitted from all pixels of an image in order
 to produce a full-sized render of a scene.
 '''
-class HarmonicEmbedding(torch.nn.module):
+class HarmonicEmbedding(torch.nn.Module):
     def __init__(self, n_harmonic_functions=60, omega0=0.1):
        return
 
@@ -319,7 +319,7 @@ def show_full_render(
             cameras=camera,                                                 
             volumetric_function=neural_radiance_field.batched_forward
         )
-        rendered_image, renderered_silhoutte = (                            # Split rendering results to i) silhoutte render 
+        rendered_image, rendered_silhoutte = (                            # Split rendering results to i) silhoutte render 
             rendered_image_silhoutte[0].split([3, 1], dim=-1)               # and ii) image render.
         )
     
@@ -330,7 +330,7 @@ def show_full_render(
 
     ax[0].plot(list(range(len(loss_history_color))), loss_history_color, linewidth=1)
     ax[1].imshow(clamp_and_detach(rendered_image))
-    ax[2].imshow(clamp_and_detach(renderered_silhoutte[..., 0]))
+    ax[2].imshow(clamp_and_detach(rendered_silhoutte[..., 0]))
     ax[3].plot(list(range(len(loss_history_sil))), loss_history_sil, linewidth=1)
     ax[4].imshow(clamp_and_detach(target_image))
     ax[5].imshow(clamp_and_detach(target_silhouette))
@@ -351,3 +351,173 @@ def show_full_render(
     # fig.show()
     fig.savefig('render_image.png')
     return fig
+
+
+def generate_rotating_nerf(neural_radiance_field, n_frames=50):
+    logRs = torch.zeros(n_frames, 3, device=device)
+    logRs [:, 1] = torch.linspace(-3.14, 3.14, n_frames, device=device)
+    Rs = so3_exp_map(logRs)
+    Ts = torch.zeros(n_frames, 3, device=device)
+    Ts[:, 2] = 2.7
+    frames = []
+    print('Rendering rotating NeRF ....')
+
+    for R, T in zip(tqdm(Rs), Ts):
+        camera = FoVPerspectiveCameras(
+            R=R[None],
+            T=T[None],
+            znear=target_cameras.znear[0],
+            zfar=target_cameras.zfar[0],
+            aspect_ratio=target_cameras.aspect_ratio[0],
+            fov=target_cameras.fov[0],
+            device=device
+        )
+
+        frames.append(
+            renderer_grid(
+                camearas=camera,
+                volumetric_function=neural_radiance_field.batched_forward
+            )[0][..., :3]
+        )
+    return torch.cat(frames)
+
+
+'''
+(5) Fit the radiance field
+
+Below codes executes the `radiance field fitting` with differentiable rendering.
+In order to fit the radiance field, we render it from the viewpoints of `target_cameras` and
+compare the render results with the oberved `target_images` and `target_silhouttes`.
+
+The comparison is done by evaluating the mean Huber (smooth-L1) loss between 
+`target_images - rendered_images` and `target_silhouettes - rendered_silhouettes`.
+
+Since we use `MonteCarloRaysampler`, the outputs of the training renderer `renderer_mc` are colors
+of pixels that are `randomly sampled` from the image plane, NOT a lattice of pixels forming a valid image.
+So in order to compare the `rendered colors` with GT, we use the `random MonteCarlo pixel locations` to
+sample the GT images/silhouettes `target_silhouettes/rendered_silhouettes` at the xy locations
+corresponding to the render locations. This is done with `sample_images_at_mc_locs`.
+'''
+
+if __name__=='__main__':
+    renderer_grid = renderer_grid.to(device)                    # First, move relevant variables to device.
+    renderer_mc = renderer_mc.to(device)
+    target_cameras = target_cameras.to(device)
+    target_images = target_images.to(device)
+    target_silhouettes = target_silhouettes.to(device)
+
+    torch.manual_seed(1)                                    
+
+    neural_radiance_field = NeuralRadianceField().to(device)    # Instantiate radiance field model
+
+    lr = 1e-3
+    optimizer = torch.optim.Adam(neural_radiance_field.parameters(), lr=lr)
+
+    batch_size = 6                  # Sample 6 random cameras in a minibatch.
+    n_iter = 3000                   # 3000 iters take ~20 min on Tesla M40 (Optimal: n_iter=20000)
+    loss_history_color = []         # Init loss history buffers
+    loss_history_sil = []
+
+    # Main optimization loop
+    for iter in range(n_iter):
+        if iter == round(n_iter * 0.75):                # Decay learning rate at 75% iter
+            print('Decreasing LR 10-fold!')
+            optimizer = torch.optim.Adam(
+                neural_radiance_field.parameters(), lr=lr * 0.1
+            )
+        
+        optimizer.zero_grad()
+        batch_idx = torch.randperm(len(target_cameras))[:batch_size]    # Sample random batch indices.
+        batch_cameras = FoVPerspectiveCameras(                          # Sample the minibatch of cameras.
+            R = target_cameras.R[batch_idx],
+            T = target_cameras.T[batch_idx],
+            znear = target_cameras.znear[batch_idx],
+            zfar = target_cameras.zfar[batch_idx],
+            aspect_ratio = target_cameras.aspect_ratio[batch_idx],
+            fov = target_cameras.fov[batch_idx],
+            device = device
+        )
+
+        # Evaluate the NeRF model!
+        rendered_images_silhouettes, sampled_rays = renderer_mc(
+            cemeras=batch_cameras,
+            volumetric_function=neural_radiance_field
+        )
+        rendered_images, rendered_silhouettes = (
+            rendered_images_silhouettes.split([3, 1], dim=-1)
+        )
+
+        silhouettes_at_rays = sample_images_at_mc_locs(                 # Compute the `silhouette error` as the mean 
+            target_silhouettes[batch_idx, ..., None],                   # Huber loss between `predicted masks` and 
+            sampled_rays.xys                                            # `sampled target silhouettes`.
+        )
+        sil_err = huber(
+            rendered_silhouettes,
+            silhouettes_at_rays
+        ).abs().mean()
+
+        colors_at_rays = sample_images_at_mc_locs(                      # Compute the `color error` as the mean 
+            target_images[batch_idx],                                   # Huber loss between `rendered colors` and
+            sampled_rays.xys                                            # `sampled target images`.
+        )
+        color_err = huber(
+            rendered_images,
+            colors_at_rays
+        ).abs().mean()
+
+        # optimization loss = color error + silhouette error
+        loss = color_err + sil_err
+
+        loss_history_color.append(float(color_err))
+        loss_history_sil.append(float(sil_err))
+
+        # For every 10 iters, print the losses
+        if iter % 10 == 0:
+            print(
+                f'Iteration {iter:05d}:'
+                + f' loss color = {float(color_err):1.2e}'
+                + f' loss silhouette = {float(sil_err):1.2e}'
+            )
+
+        loss.backward()
+        optimizer.step()
+
+        # Visualize the full renders every 100 iters
+        if iter % 100 == 0:
+            show_idx = torch.randperm(len(target_cameras))[:1]
+            show_full_render(
+                neural_radiance_field,
+                FoVPerspectiveCameras(
+                    R = target_cameras.R[show_idx], 
+                    T = target_cameras.T[show_idx], 
+                    znear = target_cameras.znear[show_idx],
+                    zfar = target_cameras.zfar[show_idx],
+                    aspect_ratio = target_cameras.aspect_ratio[show_idx],
+                    fov = target_cameras.fov[show_idx],
+                    device = device
+                ),
+                target_images[show_idx][0],
+                target_silhouettes[show_idx][0],
+                loss_history_color,
+                loss_history_sil
+            )
+    
+    '''
+    (6) Visualize the optimized NeRF    
+    '''
+    with torch.no_grad():
+        rotating_nerf_frames = generate_rotating_nerf(
+            neural_radiance_field,
+            n_frames=3 * 5
+        )
+    
+    image_grid(
+        rotating_nerf_frames.clamp(0., 1.).cpu().numpy(),
+        rows=3, cols=5,
+        rgb=True, fill=True
+    )
+    # plt.show()
+    plt.savefig('visualization.png')
+
+
+
