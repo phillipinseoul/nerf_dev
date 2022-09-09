@@ -1,2 +1,4 @@
 version_1/data/cow_mesh/cow.mtl
 version_1/data/cow_mesh/cow.obj
+
+*.npz
